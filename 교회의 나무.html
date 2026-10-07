@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>교회의 나무 — A3 인쇄용</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
+<style>
+  @page { size: A3 landscape; margin: 0; }
+  :root { --bg: #ffffff; }
+  html, body { margin: 0; height: 100%; background: #d9d6d0; overflow: hidden; }
+  #stage { position: fixed; inset: 0; cursor: grab; }
+  #stage:active { cursor: grabbing; }
+  #poster { position: absolute; left: 0; top: 0; transform-origin: 0 0; background: #fff; box-shadow: 0 2px 30px rgba(0,0,0,.18); }
+  svg { display: block; }
+  svg text { font-family: 'IBM Plex Sans KR', sans-serif; }
+  .halo { paint-order: stroke; stroke: var(--bg); stroke-width: 4px; stroke-linejoin: round; }
+  #ui { position: fixed; right: 16px; bottom: 16px; z-index: 10; display: flex; gap: 6px; }
+  #ui button { font: 500 13px 'IBM Plex Sans KR', sans-serif; background: #22201c; color: #fff; border: 0; border-radius: 6px; padding: 9px 13px; cursor: pointer; min-width: 38px; }
+  #ui button:hover { background: #000; }
+  #hint { position: fixed; left: 16px; bottom: 18px; font: 12px 'IBM Plex Sans KR', sans-serif; color: #5d5952; }
+  #loading { position: fixed; inset: 0; display: grid; place-items: center; color: #5d5952; font: 14px 'IBM Plex Sans KR', sans-serif; }
+  @media print {
+    html, body { background: #fff; overflow: visible; height: auto; }
+    #ui, #hint, #loading { display: none !important; }
+    #stage { position: static; }
+    #poster { position: static; transform: none !important; box-shadow: none; width: 420mm !important; height: 297mm !important; }
+    #tree { width: 420mm; height: 297mm; }
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+<div id="loading">교회의 나무를 그리는 중…</div>
+<div id="stage"><div id="poster" data-screen-label="Church Tree A3"><svg id="tree"></svg></div></div>
+<div id="hint">스크롤로 확대 · 드래그로 이동 · 인쇄: A3 가로, 여백 없음, 배율 100%</div>
+<div id="ui"><button id="zin">+</button><button id="zout">−</button><button id="fit">전체 보기</button><button id="pr">인쇄 / PDF</button></div>
+
+<script src="https://unpkg.com/d3@7.9.0/dist/d3.min.js"></script>
+<script src="church/data.js"></script>
+<script src="church/short.js"></script>
+<script src="church/short-a3.js"></script>
+<script>
+document.fonts.load('700 20px "IBM Plex Sans KR"').then(() => document.fonts.load('400 20px "IBM Plex Sans KR"')).then(() => document.fonts.ready).then(() => {
+  const s = document.createElement('script'); s.src = 'church/render-a3.js?v=' + Date.now(); s.onload = init; document.body.appendChild(s);
+});
+function init() {
+  const { W, H } = window.__POSTER;
+  const poster = document.getElementById('poster');
+  poster.style.width = W + 'px'; poster.style.height = H + 'px';
+  document.getElementById('loading').remove();
+  const stage = d3.select('#stage');
+  const zoom = d3.zoom().scaleExtent([0.1, 6]).on('zoom', e => {
+    const t = e.transform; poster.style.transform = `translate(${t.x}px,${t.y}px) scale(${t.k})`;
+    try { localStorage.setItem('church-a3-zoom', JSON.stringify([t.x, t.y, t.k])); } catch (_) {}
+  });
+  stage.call(zoom);
+  const fitT = () => { const s = Math.min(innerWidth / W, innerHeight / H) * 0.96;
+    return d3.zoomIdentity.translate((innerWidth - W * s) / 2, (innerHeight - H * s) / 2).scale(s); };
+  let saved = null; try { saved = JSON.parse(localStorage.getItem('church-a3-zoom')); } catch (_) {}
+  stage.call(zoom.transform, saved ? d3.zoomIdentity.translate(saved[0], saved[1]).scale(saved[2]) : fitT());
+  document.getElementById('fit').onclick = () => stage.transition().duration(400).call(zoom.transform, fitT());
+  document.getElementById('zin').onclick = () => stage.transition().duration(250).call(zoom.scaleBy, 1.5);
+  document.getElementById('zout').onclick = () => stage.transition().duration(250).call(zoom.scaleBy, 1 / 1.5);
+  document.getElementById('pr').onclick = () => window.print();
+}
+</script>
+</body>
+</html>

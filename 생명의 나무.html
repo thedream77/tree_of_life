@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>생명의 진화 계통수</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:ital,wght@0,400;1,400&display=swap" rel="stylesheet">
+<style>
+  :root { --bg: oklch(0.26 0.018 220); --ink: oklch(0.96 0.005 220); --dim: oklch(0.72 0.015 220); }
+  html, body { margin: 0; height: 100%; background: #111; overflow: hidden; }
+  #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #poster { width: 1800px; height: 2400px; background: var(--bg); position: absolute; left: 0; top: 0; transform-origin: 0 0;
+    font-family: 'IBM Plex Sans KR', sans-serif; color: var(--ink); overflow: hidden; }
+  svg text { font-family: 'IBM Plex Sans KR', sans-serif; }
+  .sci { font-family: 'IBM Plex Mono', monospace; font-style: italic; }
+  .halo { paint-order: stroke; stroke: var(--bg); stroke-width: 5px; stroke-linejoin: round; }
+  #ui { position: fixed; right: 16px; bottom: 16px; z-index: 10; display: flex; gap: 8px; }
+  #ui button { font: 500 13px 'IBM Plex Sans KR', sans-serif; background: #f4f4f2; color: #1b1f22; border: 0; border-radius: 6px; padding: 9px 14px; cursor: pointer; }
+  #ui button:hover { background: #fff; }
+  @media print { #ui { display: none; } }
+</style>
+</head>
+<body>
+<div id="stage"><div id="poster" data-screen-label="Tree of Life Poster"><svg id="tree" width="1800" height="2400" viewBox="0 0 1800 2400"></svg></div></div>
+<div id="ui"><button id="dl">PNG로 저장</button></div>
+
+<script src="https://unpkg.com/d3@7.9.0/dist/d3.min.js"></script>
+<script src="https://unpkg.com/html-to-image@1.11.11/dist/html-to-image.js"></script>
+<script src="tree-data.js"></script>
+<script>
+(function () {
+  const W = 1800, H = 2400;
+  const BG = 'oklch(0.26 0.018 220)';
+  const tf = ([x, y]) => [x, 205 + y * 0.9];
+
+  // ---------- flatten ----------
+  const nodes = [], links = [];
+  let id = 0;
+  function walk(n, parent, group) {
+    n.id = id++; n.parent = parent; n.g = n.g || group;
+    n.leaf = !n.children;
+    n.r = n.big === 3 ? 70 : n.big === 2 ? 54 : n.big === 1 ? 38 : n.leaf ? 13 : 9;
+    if (n.a) { const p = tf(n.a); n.fx = p[0]; n.fy = p[1]; n.x = p[0]; n.y = p[1]; }
+    nodes.push(n);
+    if (parent) links.push({ source: parent, target: n });
+    (n.children || []).forEach(c => walk(c, n, n.g));
+  }
+  walk(TREE, null, 'root');
+  walk(VIRUS, null, 'vir');
+
+  // ---------- initial positions for unanchored nodes ----------
+  function init(n) {
+    if (!n.children) return;
+    const free = n.children.filter(c => !c.a);
+    let base = n.ca ? tf(n.ca) : null;
+    if (!base) {
+      const gp = n.parent || { x: n.x, y: n.y + 1 };
+      let dx = n.x - gp.x, dy = n.y - gp.y; const L = Math.hypot(dx, dy) || 1;
+      base = [n.x + dx / L * 80, n.y + dy / L * 80];
+    }
+    const ang0 = Math.atan2(base[1] - n.y, base[0] - n.x);
+    free.forEach((c, i) => {
+      const t = free.length === 1 ? 0 : (i / (free.length - 1) - 0.5);
+      const a = ang0 + t * 2.2;
+      const d = Math.hypot(base[0] - n.x, base[1] - n.y) * 0.6 + 70;
+      c.x = n.x + Math.cos(a) * d; c.y = n.y + Math.sin(a) * d;
+      c.hx = c.x; c.hy = c.y;
+    });
+    n.children.forEach(init);
+  }
+  init(TREE); init(VIRUS);
+
+  // ---------- force layout ----------
+  const labW = n => Math.max([...n.n].length * (n.leaf ? 14 : 15) + (n.ex ? 12 : 0), (n.s || '').length * 6.4, [...(n.e || '')].length * 11.5, [...(n.ord || '')].length * 10.5);
+  const collR = n => n.big ? n.r + 22 : Math.max(n.leaf ? 40 : 30, labW(n) / 2 + 4);
+  const sim = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links).distance(l => l.target.leaf ? 70 : 85).strength(l => l.target.leaf ? 0.7 : 0.35))
+    .force('collide', d3.forceCollide(collR).strength(1).iterations(4))
+    .force('charge', d3.forceManyBody().strength(n => n.leaf ? -30 : -15).distanceMax(120))
+    .force('hx', d3.forceX(n => n.hx ?? n.x).strength(n => n.hx != null ? 0.04 : 0))
+    .force('hy', d3.forceY(n => n.hy ?? n.y).strength(n => n.hx != null ? 0.04 : 0))
+    .stop();
+  nodes.forEach(n => {
+    const b = BOX[n.g];
+    n.box = b ? [b[0], tf([0, b[1]])[1], b[2], tf([0, b[3]])[1]] : [60, 230, W - 60, H - 150];
+    if (n.fx == null) clamp(n);
+  });
+  function clamp(n) {
+    const m = Math.min(70, labW(n) / 2), [x0, y0, x1, y1] = n.box;
+    n.x = Math.max(x0 + m * 0.6, Math.min(x1 - m * 0.6, n.x));
+    n.y = Math.max(y0 + 14, Math.min(y1 - 40, n.y));
+  }
+  for (let i = 0; i < 700; i++) {
+    sim.alpha(Math.max(sim.alpha(), i < 600 ? 0.12 : 0.02));
+    sim.tick();
+    nodes.forEach(n => { if (n.fx == null) clamp(n); });
+  }
+
+  // ---------- render ----------
+  const svg = d3.select('#tree');
+  const col = n => GROUPS[n.g].c;
+  const gl = svg.append('g'), gn = svg.append('g');
+
+  // branches: thickness by subtree size
+  function size(n) { return n.sz ??= n.children ? 1 + n.children.reduce((s, c) => s + size(c), 0) : 1; }
+  size(TREE); size(VIRUS);
+  links.forEach(l => {
+    const t = l.target, w = Math.max(2.5, Math.min(22, Math.sqrt(size(t)) * 1.7));
+    gl.append('line').attr('x1', l.source.x).attr('y1', l.source.y).attr('x2', t.x).attr('y2', t.y)
+      .attr('stroke', col(t)).attr('stroke-width', w).attr('stroke-linecap', 'round')
+      .attr('stroke-dasharray', t.ex ? '7 7' : null).attr('opacity', t.ex ? 0.7 : 0.9);
+  });
+
+  nodes.forEach(n => {
+    const g = gn.append('g').attr('transform', `translate(${n.x},${n.y})`);
+    const c = col(n);
+    if (n.big) {
+      g.append('circle').attr('r', n.r + 6).attr('fill', 'none').attr('stroke', c).attr('stroke-opacity', 0.35).attr('stroke-width', 2);
+      g.append('circle').attr('r', n.r).attr('fill', c);
+      const fs = n.big === 3 ? 34 : n.big === 2 ? 22 : 16;
+      g.append('text').attr('text-anchor', 'middle').attr('y', n.ma ? -2 : 4).attr('fill', BG)
+        .attr('font-size', fs).attr('font-weight', 700).text(n.n);
+      g.append('text').attr('text-anchor', 'middle').attr('y', (n.ma ? -2 : 4) + fs * 0.8).attr('class', 'sci')
+        .attr('fill', BG).attr('font-size', n.big === 3 ? 13 : 10.5).attr('opacity', 0.8).text(n.s);
+      if (n.ma) g.append('text').attr('text-anchor', 'middle').attr('y', n.r + 26).attr('class', 'halo')
+        .attr('fill', c).attr('font-size', 14).attr('font-weight', 600).text(n.ma);
+    } else if (n.leaf) {
+      const r = n.hl ? 19 : n.r;
+      g.append('circle').attr('r', r).attr('fill', BG).attr('stroke', c).attr('stroke-width', n.hl ? 4 : 2.5)
+        .attr('stroke-dasharray', n.ex ? '4 3' : null);
+      g.append('circle').attr('r', n.hl ? 9 : 5).attr('fill', c).attr('opacity', n.ex ? 0.4 : 1);
+      if (n.ord) g.append('text').attr('class', 'halo').attr('text-anchor', 'middle').attr('y', -r - 6)
+        .attr('fill', c).attr('font-size', 11).attr('font-weight', 600).attr('opacity', 0.85).text(n.ord);
+      g.append('text').attr('class', 'halo').attr('text-anchor', 'middle').attr('y', r + 17)
+        .attr('fill', n.hl ? c : 'var(--ink)').attr('font-size', n.hl ? 17 : 14.5).attr('font-weight', n.hl ? 700 : 500)
+        .text(n.n + (n.ex ? ' †' : ''));
+      g.append('text').attr('class', 'halo sci').attr('text-anchor', 'middle').attr('y', r + 31)
+        .attr('fill', 'var(--dim)').attr('font-size', 10.5).text(n.s);
+      if (n.e) g.append('text').attr('class', 'halo').attr('text-anchor', 'middle').attr('y', r + 45)
+        .attr('fill', c).attr('font-size', 11.5).attr('font-weight', 500).text(n.e);
+    } else {
+      g.append('circle').attr('r', n.r).attr('fill', c).attr('stroke', BG).attr('stroke-width', 3);
+      g.append('text').attr('class', 'halo').attr('text-anchor', 'middle').attr('y', -15)
+        .attr('fill', c).attr('font-size', 15.5).attr('font-weight', 700).text(n.n);
+      g.append('text').attr('class', 'halo sci').attr('text-anchor', 'middle').attr('y', 26)
+        .attr('fill', 'var(--dim)').attr('font-size', 10.5).text(n.s);
+      if (n.ma) g.append('text').attr('class', 'halo').attr('text-anchor', 'middle').attr('y', 41)
+        .attr('fill', c).attr('font-size', 12.5).attr('font-weight', 600).text(n.ma);
+    }
+  });
+
+  // ---------- title ----------
+  const head = svg.append('g');
+  head.append('text').attr('x', W / 2).attr('y', 118).attr('text-anchor', 'middle')
+    .attr('font-size', 92).attr('font-weight', 700).attr('letter-spacing', -2).attr('fill', 'var(--ink)').text('생명의 나무');
+  head.append('text').attr('x', W / 2).attr('y', 166).attr('text-anchor', 'middle')
+    .attr('font-size', 22).attr('font-weight', 500).attr('letter-spacing', 6).attr('fill', 'var(--dim)').text('40억 년, 하나의 뿌리에서 갈라진 생명의 계통');
+  head.append('line').attr('x1', 60).attr('x2', W - 60).attr('y1', 196).attr('y2', 196).attr('stroke', 'var(--dim)').attr('stroke-opacity', 0.25);
+
+  // ---------- legend ----------
+  const lg = svg.append('g').attr('transform', `translate(60, ${H - 62})`);
+  svg.append('line').attr('x1', 60).attr('x2', W - 60).attr('y1', H - 100).attr('y2', H - 100).attr('stroke', 'var(--dim)').attr('stroke-opacity', 0.25);
+  let lx = 0;
+  Object.entries(GROUPS).filter(([k]) => k !== 'root').forEach(([k, v]) => {
+    lg.append('circle').attr('cx', lx + 7).attr('cy', -5).attr('r', 7).attr('fill', v.c);
+    lg.append('text').attr('x', lx + 22).attr('y', 0).attr('font-size', 14).attr('fill', 'var(--dim)').text(v.name);
+    lx += 34 + [...v.name].length * 13.5;
+  });
+  const rk = svg.append('g').attr('transform', `translate(60, ${H - 26})`);
+  rk.append('text').attr('font-size', 13).attr('fill', 'var(--dim)')
+    .text('분류 단계  역 → 계 → 문 → 강 → 목 → 과   ·   말단 노드는 모두 \'과(Family)\'이며, 아래 작은 글씨는 대표 생물');
+
+  const nt = svg.append('g').attr('transform', `translate(${W - 60}, ${H - 62})`).attr('text-anchor', 'end');
+  [['†  멸종 계통 (점선)   ·   가지 길이는 시간에 비례하지 않음', 0], ['굵은 가지일수록 많은 하위 계통 포함   ·   바이러스는 세포 생물 계통과 별개', 36]].forEach(([t, y]) =>
+    nt.append('text').attr('y', y).attr('font-size', 13.5).attr('fill', 'var(--dim)').text(t));
+
+  // ---------- scale to viewport ----------
+  const poster = document.getElementById('poster');
+  function fit() {
+    const s = Math.min(innerWidth / W, innerHeight / H);
+    poster.style.transform = `translate(${(innerWidth - W * s) / 2}px, ${(innerHeight - H * s) / 2}px) scale(${s})`;
+  }
+  addEventListener('resize', fit); fit();
+
+  // ---------- export ----------
+  document.getElementById('dl').onclick = async () => {
+    const t = poster.style.transform; poster.style.transform = 'none';
+    try {
+      const url = await htmlToImage.toPng(poster, { width: W, height: H, pixelRatio: 2 });
+      const a = document.createElement('a'); a.href = url; a.download = '생명의 나무.png'; a.click();
+    } finally { poster.style.transform = t; }
+  };
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>생명의 나무 — 진화 계통수</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:ital,wght@0,400;1,400&display=swap" rel="stylesheet">
+<style>
+  :root { --bg: oklch(0.26 0.018 220); --ink: oklch(0.96 0.005 220); --dim: oklch(0.70 0.015 220); }
+  html, body { margin: 0; height: 100%; background: #15191b; overflow: hidden; }
+  #stage { position: fixed; inset: 0; cursor: grab; }
+  #stage:active { cursor: grabbing; }
+  #poster { position: absolute; left: 0; top: 0; transform-origin: 0 0; background: var(--bg);
+    font-family: 'IBM Plex Sans KR', sans-serif; color: var(--ink); }
+  svg text { font-family: 'IBM Plex Sans KR', sans-serif; }
+  .sci { font-family: 'IBM Plex Mono', monospace; font-style: italic; }
+  .halo { paint-order: stroke; stroke: var(--bg); stroke-width: 4px; stroke-linejoin: round; }
+  #ui { position: fixed; right: 16px; bottom: 16px; z-index: 10; display: flex; gap: 6px; }
+  #ui button { font: 500 13px 'IBM Plex Sans KR', sans-serif; background: #f4f4f2; color: #1b1f22; border: 0; border-radius: 6px; padding: 9px 13px; cursor: pointer; min-width: 38px; }
+  #ui button:hover { background: #fff; }
+  #hint { position: fixed; left: 16px; bottom: 18px; font: 12px 'IBM Plex Sans KR', sans-serif; color: #9aa3a6; }
+  #loading { position: fixed; inset: 0; display: grid; place-items: center; color: #9aa3a6; font: 14px 'IBM Plex Sans KR', sans-serif; }
+</style>
+</head>
+<body>
+<div id="loading">계통수를 그리는 중…</div>
+<div id="stage"><div id="poster" data-screen-label="Tree of Life Poster"><svg id="tree"></svg></div></div>
+<div id="hint">스크롤로 확대 · 드래그로 이동</div>
+<div id="ui"><button id="zin">+</button><button id="zout">−</button><button id="fit">전체 보기</button><button id="dl">PNG로 저장</button></div>
+
+<script src="https://unpkg.com/d3@7.9.0/dist/d3.min.js"></script>
+<script src="https://unpkg.com/html-to-image@1.11.11/dist/html-to-image.js"></script>
+<script src="tree-data.js"></script>
+<script>
+document.fonts.ready.then(function () {
+  const BG = 'oklch(0.26 0.018 220)';
+  const col = g => GROUPS[g].c;
+  const svg = d3.select('#tree');
+  const world = svg.append('g');
+  const treeG = world.append('g');
+  const linkG = treeG.append('g'), dotG = treeG.append('g'), labG = treeG.append('g');
+
+  // ---------- hierarchy ----------
+  const SPAN = Math.PI * 206 / 180;            // 부채꼴 각도
+  const LINE = 19;                              // 말단 라벨 간 최소 간격(px)
+  const root = d3.hierarchy(TREE);
+  root.each(d => { d.g = d.data.g || (d.parent ? d.parent.g : 'root'); });
+  d3.cluster().size([SPAN, 1]).separation((a, b) => a.parent === b.parent ? 1 : 1.6)(root);
+  const leaves = root.leaves();
+  let minGap = Infinity;
+  for (let i = 1; i < leaves.length; i++) minGap = Math.min(minGap, leaves[i].x - leaves[i - 1].x);
+  const R = Math.max(900, LINE / minGap);
+  const rad = d => R * Math.pow(d.y, 0.82);
+  const ang = d => d.x - SPAN / 2;              // 0 = 위쪽
+  const P = (a, r) => [Math.sin(a) * r, -Math.cos(a) * r];
+  root.each(d => { d.a = ang(d); d.r = rad(d); [d.px, d.py] = P(d.a, d.r); });
+
+  // ---------- branches: radial elbow (교차 없음) ----------
+  function size(d) { return d.leaves().length; }
+  root.descendants().forEach(d => {
+    if (!d.parent) return;
+    const p = d.parent, [ax, ay] = P(d.a, p.r);
+    const sweep = d.a > p.a ? 1 : 0;
+    const w = Math.max(1.6, Math.min(11, Math.sqrt(size(d)) * 1.05));
+    const path = Math.abs(d.a - p.a) < 1e-6
+      ? `M${p.px},${p.py} L${d.px},${d.py}`
+      : `M${p.px},${p.py} A${p.r},${p.r} 0 0 ${sweep} ${ax},${ay} L${d.px},${d.py}`;
+    linkG.append('path').attr('d', path).attr('fill', 'none').attr('stroke', col(d.g))
+      .attr('stroke-width', w).attr('stroke-linecap', 'round').attr('opacity', d.data.ex ? 0.55 : 0.85)
+      .attr('stroke-dasharray', d.data.ex ? '5 5' : null);
+  });
+
+  // ---------- label collision bookkeeping ----------
+  const boxes = [];
+  const hit = b => boxes.some(o => b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1]);
+  const kw = (s, fs) => [...(s || '')].reduce((w, ch) => w + (/[\u3131-\uD79D]/.test(ch) ? fs * 0.98 : fs * 0.56), 0);
+
+  // ---------- leaves ----------
+  leaves.forEach(d => {
+    const c = col(d.g), deg = d.a * 180 / Math.PI - 90, left = d.a < 0;
+    dotG.append('circle').attr('cx', d.px).attr('cy', d.py).attr('r', d.data.hl ? 6.5 : 4)
+      .attr('fill', d.data.ex ? BG : c).attr('stroke', c).attr('stroke-width', d.data.ex ? 1.6 : 0);
+    const g = labG.append('g').attr('transform', `rotate(${deg}) translate(${R + 12},0)${left ? ' rotate(180)' : ''}`);
+    const t = g.append('text').attr('class', 'halo').attr('y', 4.5).attr('text-anchor', left ? 'end' : 'start');
+    if (d.data.ord) t.append('tspan').attr('fill', c).attr('font-size', 11).attr('font-weight', 500).text(d.data.ord + ' › ');
+    t.append('tspan').attr('fill', d.data.hl ? c : 'var(--ink)').attr('font-size', d.data.hl ? 14.5 : 13)
+      .attr('font-weight', d.data.hl ? 700 : 600).text(d.data.n + (d.data.ex ? ' †' : ''));
+    t.append('tspan').attr('class', 'sci').attr('fill', 'var(--dim)').attr('font-size', 10).text('  ' + d.data.s);
+    if (d.data.e) t.append('tspan').attr('fill', c).attr('font-size', 11).attr('opacity', 0.9).text('  ' + d.data.e);
+  });
+
+  // ---------- big milestone badges ----------
+  const inner = root.descendants().filter(d => d.children);
+  inner.filter(d => d.data.big).forEach(d => {
+    const c = col(d.g), big = d.data.big;
+    const fs = big === 3 ? 24 : big === 2 ? 16 : 13.5;
+    const w = kw(d.data.n, fs) + (big === 3 ? 40 : 24), h = fs + (big === 3 ? 20 : 12);
+    const g = labG.append('g').attr('transform', `translate(${d.px},${d.py})`);
+    g.append('rect').attr('x', -w / 2).attr('y', -h / 2).attr('width', w).attr('height', h).attr('rx', h / 2)
+      .attr('fill', c).attr('stroke', BG).attr('stroke-width', 3);
+    g.append('text').attr('text-anchor', 'middle').attr('y', fs * 0.36).attr('fill', BG)
+      .attr('font-size', fs).attr('font-weight', 700).text(d.data.n);
+    let bh = h / 2;
+    const sub = [d.data.s, d.data.ma].filter(Boolean).join(' · ');
+    if (sub) {
+      g.append('text').attr('class', 'halo').attr('text-anchor', 'middle').attr('y', h / 2 + 13)
+        .attr('fill', c).attr('font-size', big === 3 ? 13 : 10.5).attr('font-weight', 500).text(sub);
+      bh += 16;
+    }
+    const sw = Math.max(w, kw(sub, 10.5)) / 2;
+    boxes.push([d.px - sw, d.py - h / 2, d.px + sw, d.py + bh]);
+  });
+
+  // ---------- other internal nodes ----------
+  inner.filter(d => !d.data.big).sort((a, b) => b.r - a.r).forEach(d => {
+    const c = col(d.g);
+    dotG.append('circle').attr('cx', d.px).attr('cy', d.py).attr('r', 3.5).attr('fill', c).attr('stroke', BG).attr('stroke-width', 1.5);
+    const fs = 11, txt = d.data.n, w = kw(txt, fs) + 4, sub = d.data.ma;
+    const sw = Math.max(w, kw(sub, 9.5));
+    const hgt = sub ? 25 : 13;
+    // 후보 위치: 바깥쪽(가지 방향)이 아닌 안쪽/옆 위주
+    const cands = [
+      [0, -7, 'middle'], [0, 16, 'middle'], [7, 4, 'start'], [-7, 4, 'end'],
+      [0, -19, 'middle'], [0, 28, 'middle'], [12, -8, 'start'], [-12, -8, 'end'], [12, 16, 'start'], [-12, 16, 'end']
+    ];
+    let pick = null, fbox = null;
+    for (const [dx, dy, an] of cands) {
+      const x0 = an === 'middle' ? d.px + dx - sw / 2 : an === 'start' ? d.px + dx : d.px + dx - sw;
+      const b = [x0 - 1, d.py + dy - 10, x0 + sw + 1, d.py + dy - 10 + hgt];
+      if (!hit(b)) { pick = [dx, dy, an]; fbox = b; break; }
+    }
+    if (!pick) { pick = cands[0]; const x0 = d.px - sw / 2; fbox = [x0, d.py - 17, x0 + sw, d.py - 17 + hgt]; }
+    boxes.push(fbox);
+    const t = labG.append('text').attr('class', 'halo').attr('x', d.px + pick[0]).attr('y', d.py + pick[1])
+      .attr('text-anchor', pick[2]).attr('fill', c).attr('font-size', fs).attr('font-weight', 600).text(txt);
+    if (sub) labG.append('text').attr('class', 'halo').attr('x', d.px + pick[0]).attr('y', d.py + pick[1] + 12)
+      .attr('text-anchor', pick[2]).attr('fill', c).attr('opacity', 0.8).attr('font-size', 9.5).text(sub);
+  });
+
+  // ---------- page layout ----------
+  const tb = treeG.node().getBBox();
+  const M = 90, TITLE = 230;
+  const W = Math.ceil(tb.width + M * 2);
+  treeG.attr('transform', `translate(${M - tb.x},${TITLE - tb.y})`);
+  let y = TITLE + tb.height + 40;
+
+  // title
+  world.append('text').attr('x', W / 2).attr('y', 120).attr('text-anchor', 'middle')
+    .attr('font-size', 96).attr('font-weight', 700).attr('letter-spacing', -2).attr('fill', 'var(--ink)').text('생명의 나무');
+  world.append('text').attr('x', W / 2).attr('y', 172).attr('text-anchor', 'middle')
+    .attr('font-size', 22).attr('font-weight', 500).attr('letter-spacing', 6).attr('fill', 'var(--dim)')
+    .text('40억 년, 하나의 뿌리에서 갈라진 생명의 계통 — 역 · 계 · 문 · 강 · 목 · 과');
+  world.append('line').attr('x1', M).attr('x2', W - M).attr('y1', 204).attr('y2', 204).attr('stroke', 'var(--dim)').attr('stroke-opacity', 0.25);
+
+  // ---------- bottom band: legend + notes (left), viruses (right) ----------
+  world.append('line').attr('x1', M).attr('x2', W - M).attr('y1', y).attr('y2', y).attr('stroke', 'var(--dim)').attr('stroke-opacity', 0.25);
+  y += 50;
+  const lg = world.append('g').attr('transform', `translate(${M},${y})`);
+  lg.append('text').attr('font-size', 16).attr('font-weight', 700).attr('fill', 'var(--ink)').text('계통 색상');
+  Object.entries(GROUPS).filter(([k]) => k !== 'root').forEach(([k, v], i) => {
+    const cx = (i % 4) * 190, cy = 34 + Math.floor(i / 4) * 28;
+    lg.append('circle').attr('cx', cx + 7).attr('cy', cy - 5).attr('r', 7).attr('fill', v.c);
+    lg.append('text').attr('x', cx + 22).attr('y', cy).attr('font-size', 14).attr('fill', 'var(--dim)').text(v.name);
+  });
+  const notes = [
+    '읽는 법   목 › 과   학명   대표 생물   (과가 하나뿐인 목은 한 줄로 표기)',
+    '말단은 모두 \u2018과(Family)\u2019 단계 · † 멸종 계통(점선) · 가지 길이는 시간에 비례하지 않음',
+    '굵은 가지일수록 많은 하위 계통을 포함 · 단순화된 대표 계통만 수록',
+  ];
+  notes.forEach((s, i) => lg.append('text').attr('y', 160 + i * 24).attr('font-size', 14).attr('fill', 'var(--dim)').text(s));
+
+  // viruses — separate horizontal dendrogram
+  const vr = d3.hierarchy(VIRUS);
+  vr.each(d => { d.g = 'vir'; });
+  const VROW = 21, VW = 520;
+  d3.cluster().nodeSize([VROW, 1]).separation((a, b) => a.parent === b.parent ? 1 : 1.4)(vr);
+  const vLeaves = vr.leaves();
+  const vMin = d3.min(vr.descendants(), d => d.x), vMax = d3.max(vr.descendants(), d => d.x);
+  const vG = world.append('g');
+  const vx = d => d.y * VW * 0.62, vy = d => d.x - vMin;
+  const vc = col('vir');
+  vG.append('text').attr('y', -42).attr('font-size', 16).attr('font-weight', 700).attr('fill', 'var(--ink)').text('바이러스');
+  vG.append('text').attr('y', -22).attr('font-size', 12.5).attr('fill', 'var(--dim)')
+    .text('세포가 없어 생명의 나무에 포함되지 않음 · 기원이 여럿인 별도 계통 (ICTV 영역 기준)');
+  vr.descendants().forEach(d => {
+    if (!d.parent) return;
+    vG.append('path').attr('d', `M${vx(d.parent)},${vy(d.parent)} V${vy(d)} H${vx(d)}`)
+      .attr('fill', 'none').attr('stroke', vc).attr('stroke-width', Math.max(1.4, Math.sqrt(d.leaves().length) * 1.1)).attr('opacity', 0.85);
+  });
+  vr.descendants().forEach(d => {
+    vG.append('circle').attr('cx', vx(d)).attr('cy', vy(d)).attr('r', d.children ? 3.5 : 4).attr('fill', vc);
+    if (d.children) {
+      vG.append('text').attr('class', 'halo').attr('x', vx(d) + 6).attr('y', vy(d) - 6)
+        .attr('fill', vc).attr('font-size', d.depth ? 11 : 13).attr('font-weight', 600).text(d.depth ? d.data.n : '');
+    } else {
+      const t = vG.append('text').attr('class', 'halo').attr('x', vx(d) + 10).attr('y', vy(d) + 4.5);
+      if (d.data.ord) t.append('tspan').attr('fill', vc).attr('font-size', 11).text(d.data.ord + ' › ');
+      t.append('tspan').attr('fill', 'var(--ink)').attr('font-size', 13).attr('font-weight', 600).text(d.data.n);
+      t.append('tspan').attr('class', 'sci').attr('fill', 'var(--dim)').attr('font-size', 10).text('  ' + d.data.s);
+      t.append('tspan').attr('fill', vc).attr('font-size', 11).text('  ' + d.data.e);
+    }
+  });
+  const vb = vG.node().getBBox();
+  vG.attr('transform', `translate(${W - M - vb.width},${y + 42})`);
+  const H = Math.ceil(Math.max(y + 42 + vb.height + vb.y, y + 240) + 70);
+
+  svg.attr('width', W).attr('height', H).attr('viewBox', `0 0 ${W} ${H}`);
+  const poster = document.getElementById('poster');
+  poster.style.width = W + 'px'; poster.style.height = H + 'px';
+  document.getElementById('loading').remove();
+
+  // ---------- zoom / pan ----------
+  const stage = d3.select('#stage');
+  const zoom = d3.zoom().scaleExtent([0.05, 4]).on('zoom', e => {
+    const t = e.transform; poster.style.transform = `translate(${t.x}px,${t.y}px) scale(${t.k})`;
+    try { localStorage.setItem('tol-zoom', JSON.stringify([t.x, t.y, t.k])); } catch (_) {}
+  });
+  stage.call(zoom);
+  const fitT = () => {
+    const s = Math.min(innerWidth / W, innerHeight / H) * 0.98;
+    return d3.zoomIdentity.translate((innerWidth - W * s) / 2, (innerHeight - H * s) / 2).scale(s);
+  };
+  let saved = null; try { saved = JSON.parse(localStorage.getItem('tol-zoom')); } catch (_) {}
+  stage.call(zoom.transform, saved ? d3.zoomIdentity.translate(saved[0], saved[1]).scale(saved[2]) : fitT());
+  document.getElementById('fit').onclick = () => stage.transition().duration(400).call(zoom.transform, fitT());
+  document.getElementById('zin').onclick = () => stage.transition().duration(250).call(zoom.scaleBy, 1.5);
+  document.getElementById('zout').onclick = () => stage.transition().duration(250).call(zoom.scaleBy, 1 / 1.5);
+
+  // ---------- export ----------
+  document.getElementById('dl').onclick = async e => {
+    const btn = e.currentTarget; btn.textContent = '저장 중…';
+    const t = poster.style.transform; poster.style.transform = 'none';
+    try {
+      const url = await htmlToImage.toPng(poster, { width: W, height: H, pixelRatio: 1.5 });
+      const a = document.createElement('a'); a.href = url; a.download = '생명의 나무.png'; a.click();
+    } finally { poster.style.transform = t; btn.textContent = 'PNG로 저장'; }
+  };
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>생명의 나무 v4 — 진화 계통수</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:ital,wght@0,400;1,400&display=swap" rel="stylesheet">
+<style>
+  :root { --bg: oklch(0.26 0.018 220); --ink: oklch(0.96 0.005 220); --dim: oklch(0.72 0.015 220); }
+  html, body { margin: 0; height: 100%; background: #111; overflow: hidden; }
+  #stage { position: fixed; inset: 0; cursor: grab; }
+  #stage:active { cursor: grabbing; }
+  #poster { background: var(--bg); position: absolute; left: 0; top: 0; transform-origin: 0 0;
+    font-family: 'IBM Plex Sans KR', sans-serif; color: var(--ink); overflow: hidden; }
+  svg text { font-family: 'IBM Plex Sans KR', sans-serif; }
+  .sci { font-family: 'IBM Plex Mono', monospace; font-style: italic; }
+  .halo { paint-order: stroke; stroke: var(--bg); stroke-width: 5px; stroke-linejoin: round; }
+  #ui { position: fixed; right: 16px; bottom: 16px; z-index: 10; display: flex; gap: 6px; }
+  #ui button { font: 500 13px 'IBM Plex Sans KR', sans-serif; background: #f4f4f2; color: #1b1f22; border: 0; border-radius: 6px; padding: 9px 13px; cursor: pointer; min-width: 38px; }
+  #ui button:hover { background: #fff; }
+  #hint { position: fixed; left: 16px; bottom: 18px; font: 12px 'IBM Plex Sans KR', sans-serif; color: #9aa3a6; z-index: 10; }
+  #loading { position: fixed; inset: 0; display: grid; place-items: center; color: #9aa3a6; font: 14px 'IBM Plex Sans KR', sans-serif; z-index: 20; background: #111; }
+</style>
+</head>
+<body>
+<div id="loading">계통수를 그리는 중…</div>
+<div id="stage"><div id="poster" data-screen-label="Tree of Life Poster"><svg id="tree"></svg></div></div>
+<div id="hint">스크롤로 확대 · 드래그로 이동</div>
+<div id="ui"><button id="zin">+</button><button id="zout">−</button><button id="fit">전체 보기</button><button id="dl">PNG로 저장</button></div>
+
+<script src="https://unpkg.com/d3@7.9.0/dist/d3.min.js"></script>
+<script src="https://unpkg.com/html-to-image@1.11.11/dist/html-to-image.js"></script>
+<script src="tree-data-v4.js"></script>
+<script>
+document.fonts.ready.then(() => setTimeout(build, 30));
+function build() {
+  const S = 2.4;                   // 기준 좌표계 대비 확대 배율
+  const W = 1800 * S, H = 2400 * S, TOP = 420;
+  const BG = 'oklch(0.26 0.018 220)';
+  const tf = ([x, y]) => [x * S, TOP + y * 0.9 * S];
+
+  // ---------- flatten ----------
+  const nodes = [], links = [];
+  let id = 0;
+  function walk(n, parent, group) {
+    n.id = id++; n.parent = parent; n.g = n.g || group;
+    n.leaf = !n.children;
+    n.r = n.big === 3 ? 70 : n.big === 2 ? 54 : n.big === 1 ? 38 : n.leaf ? 13 : 9;
+    if (n.a) { const p = tf(n.a); n.fx = p[0]; n.fy = p[1]; n.x = p[0]; n.y = p[1]; }
+    nodes.push(n);
+    if (parent) links.push({ source: parent, target: n });
+    (n.children || []).forEach(c => walk(c, n, n.g));
+  }
+  walk(TREE, null, 'root');
+  walk(VIRUS, null, 'vir');
+
+  const kw = s => [...(s || '')].reduce((w, ch) => w + (/[\u3131-\uD79D]/.test(ch) ? 1 : 0.56), 0);
+  const labW = n => Math.max(kw(n.n) * (n.leaf ? 14.5 : 15.5) + (n.ex ? 12 : 0), (n.s || '').length * 6.4, kw(n.e) * 11.5, kw(n.ord) * 11);
+  // 라벨이 차지하는 사각형 (노드 기준 상대좌표)
+  function labRect(n) {
+    const w = labW(n) / 2 + 4;
+    if (n.big) return [-(n.r + 8), -(n.r + 8), n.r + 8, n.r + (n.ma ? 34 : 8)];
+    if (n.leaf) { const r = n.hl ? 19 : n.r; return [-w, -r - (n.ord ? 20 : 4), w, r + (n.e ? 50 : 36)]; }
+    return [-w, -30, w, n.ma ? 46 : 32];
+  }
+  nodes.forEach(n => { n.lr = labRect(n); });
+
+  // ---------- initial positions: ordered fans ----------
+  function init(n) {
+    if (!n.children) return;
+    const free = n.children.filter(c => !c.a);
+    let base = n.ca ? tf(n.ca) : null;
+    if (!base) {
+      const gp = n.parent || { x: n.x, y: n.y + 1 };
+      let dx = n.x - gp.x, dy = n.y - gp.y; const L = Math.hypot(dx, dy) || 1;
+      base = [n.x + dx / L * 140, n.y + dy / L * 140];
+    }
+    const ang0 = Math.atan2(base[1] - n.y, base[0] - n.x);
+    const spread = Math.min(2.6, 0.5 + free.length * 0.32);
+    const d = Math.max(Math.hypot(base[0] - n.x, base[1] - n.y) * 0.6 + 120, free.length * 120 / spread);
+    free.forEach((c, i) => {
+      const t = free.length === 1 ? 0 : (i / (free.length - 1) - 0.5);
+      const a = ang0 + t * spread;
+      c.x = n.x + Math.cos(a) * d; c.y = n.y + Math.sin(a) * d;
+      c.hx = c.x; c.hy = c.y;
+    });
+    n.children.forEach(init);
+  }
+  init(TREE); init(VIRUS);
+
+  nodes.forEach(n => {
+    const b = BOX[n.g];
+    n.box = b ? [b[0] * S, tf([0, b[1]])[1], b[2] * S, tf([0, b[3]])[1]] : [120, TOP + 40, W - 120, H - 280];
+    if (n.fx == null) clamp(n);
+  });
+  function clamp(n) {
+    const [x0, y0, x1, y1] = n.box;
+    n.x = Math.max(x0 - n.lr[0] * 0.7, Math.min(x1 - n.lr[2] * 0.7, n.x));
+    n.y = Math.max(y0 - n.lr[1], Math.min(y1 - n.lr[3], n.y));
+  }
+
+  // ---------- custom force: 선이 다른 노드·라벨을 지나가지 않게 ----------
+  function forceLinkAvoid(pad = 6, k = 0.5) {
+    let ns, ls;
+    function f(alpha) {
+      for (const n of ns) {
+        const r = n.lr;
+        const rx0 = n.x + r[0] - pad, rx1 = n.x + r[2] + pad, ry0 = n.y + r[1] - pad, ry1 = n.y + r[3] + pad;
+        const cx = (rx0 + rx1) / 2, cy = (ry0 + ry1) / 2, hw = (rx1 - rx0) / 2, hh = (ry1 - ry0) / 2;
+        for (const l of ls) {
+          const a = l.source, b = l.target;
+          if (a === n || b === n) continue;
+          if (Math.max(a.x, b.x) < rx0 || Math.min(a.x, b.x) > rx1 || Math.max(a.y, b.y) < ry0 || Math.min(a.y, b.y) > ry1) continue;
+          const vx = b.x - a.x, vy = b.y - a.y, L2 = vx * vx + vy * vy || 1;
+          let t = ((cx - a.x) * vx + (cy - a.y) * vy) / L2; t = Math.max(0, Math.min(1, t));
+          const px = a.x + vx * t, py = a.y + vy * t;
+          let dx = cx - px, dy = cy - py;
+          if (Math.abs(dx) >= hw || Math.abs(dy) >= hh) continue;
+          // 선의 법선 방향으로 밀어냄
+          const L = Math.sqrt(L2); let nx = -vy / L, ny = vx / L;
+          if (nx * dx + ny * dy < 0) { nx = -nx; ny = -ny; }
+          const depth = Math.min(hw - Math.abs(dx), hh - Math.abs(dy));
+          const m = depth * k * alpha * 4;
+          if (n.fx == null) { n.vx += nx * m; n.vy += ny * m; }
+          const half = m * 0.5;
+          if (a.fx == null) { a.vx -= nx * half * (1 - t); a.vy -= ny * half * (1 - t); }
+          if (b.fx == null) { b.vx -= nx * half * t; b.vy -= ny * half * t; }
+        }
+      }
+    }
+    f.initialize = n => { ns = n; ls = links; };
+    return f;
+  }
+
+  const collR = n => n.big ? n.r + 30 : Math.max(n.leaf ? 46 : 36, labW(n) / 2 + 10);
+  const sim = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links).distance(l => l.target.leaf ? 105 : 140).strength(l => l.target.leaf ? 0.6 : 0.3))
+    .force('collide', d3.forceCollide(n => n.big ? n.r + 30 : 30).strength(1).iterations(2))
+    .force('rect', forceRect(8))
+    .force('charge', d3.forceManyBody().strength(n => n.leaf ? -60 : -30).distanceMax(240))
+    .force('hx', d3.forceX(n => n.hx ?? n.x).strength(n => n.hx != null ? 0.02 : 0))
+    .force('hy', d3.forceY(n => n.hy ?? n.y).strength(n => n.hx != null ? 0.02 : 0))
+    .force('out', forceOutward())
+    .stop();
+
+  // 라벨 사각형끼리 겹치지 않게 (x정렬 스위핑)
+  function forceRect(pad) {
+    let ns;
+    function f() {
+      const arr = ns.map(n => [n.x + n.vx + n.lr[0] - pad / 2, n]).sort((a, b) => a[0] - b[0]);
+      for (let i = 0; i < arr.length; i++) {
+        const a = arr[i][1], ax0 = a.x + a.vx + a.lr[0] - pad / 2, ax1 = a.x + a.vx + a.lr[2] + pad / 2;
+        const ay0 = a.y + a.vy + a.lr[1] - pad / 2, ay1 = a.y + a.vy + a.lr[3] + pad / 2;
+        for (let j = i + 1; j < arr.length; j++) {
+          if (arr[j][0] > ax1) break;
+          const b = arr[j][1];
+          const bx0 = b.x + b.vx + b.lr[0] - pad / 2, bx1 = b.x + b.vx + b.lr[2] + pad / 2;
+          const by0 = b.y + b.vy + b.lr[1] - pad / 2, by1 = b.y + b.vy + b.lr[3] + pad / 2;
+          const ox = Math.min(ax1, bx1) - Math.max(ax0, bx0), oy = Math.min(ay1, by1) - Math.max(ay0, by0);
+          if (ox <= 0 || oy <= 0) continue;
+          const fa = a.fx == null ? 1 : 0, fb = b.fx == null ? 1 : 0, tot = fa + fb; if (!tot) continue;
+          if (ox < oy) {
+            const s = ((ax0 + ax1) < (bx0 + bx1) ? -1 : 1) * ox * 0.5;
+            a.vx += s * fa / tot; b.vx -= s * fb / tot;
+          } else {
+            const s = ((ay0 + ay1) < (by0 + by1) ? -1 : 1) * oy * 0.5;
+            a.vy += s * fa / tot; b.vy -= s * fb / tot;
+          }
+        }
+      }
+    }
+    f.initialize = n => { ns = n; };
+    return f;
+  }
+
+  // 자식이 할아버지 쪽으로 되돌아 접히지 않도록 바깥 방향으로 밂 (가지 교차 감소)
+  function forceOutward() {
+    let ns;
+    function f(alpha) {
+      for (const n of ns) {
+        const p = n.parent; if (!p || !p.parent || n.fx != null || p.children.length > 6) continue;
+        const g = p.parent;
+        let ux = p.x - g.x, uy = p.y - g.y; const L = Math.hypot(ux, uy) || 1; ux /= L; uy /= L;
+        const vx = n.x - p.x, vy = n.y - p.y, dot = vx * ux + vy * uy;
+        if (dot < 20) { const m = (20 - dot) * 0.08 * alpha * 4; n.vx += ux * m; n.vy += uy * m; }
+      }
+    }
+    f.initialize = n => { ns = n; };
+    return f;
+  }
+
+  function run(ticks, avoidFrom) {
+    for (let i = 0; i < ticks; i++) {
+      sim.alpha(Math.max(sim.alpha(), i < ticks * 0.85 ? 0.12 : 0.03));
+      if (i === avoidFrom) sim.force('avoid', forceLinkAvoid());
+      sim.tick();
+      nodes.forEach(n => { if (n.fx == null) clamp(n); });
+    }
+  }
+
+  // ---------- 교차 제거: 형제 가지끼리 엇갈리면 자리를 맞바꿈 ----------
+  const cross = (a, b, c, d) => {
+    const o = (p, q, r) => Math.sign((q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x));
+    return o(a, b, c) * o(a, b, d) < 0 && o(c, d, a) * o(c, d, b) < 0;
+  };
+  function sub(n, out = []) { out.push(n); (n.children || []).forEach(c => sub(c, out)); return out; }
+  function crossings() {
+    const res = [];
+    for (let i = 0; i < links.length; i++) for (let j = i + 1; j < links.length; j++) {
+      const A = links[i], B = links[j];
+      if (A.source === B.source || A.source === B.target || A.target === B.source || A.target === B.target) continue;
+      if (cross(A.source, A.target, B.source, B.target)) res.push([A, B]);
+    }
+    return res;
+  }
+  function untangle() {
+    let swapped = 0;
+    for (const [A, B] of crossings()) {
+      const p = A.target, q = B.target;
+      if (A.source !== B.source || p.fx != null || q.fx != null) continue;
+      const dx = q.x - p.x, dy = q.y - p.y;
+      const sp = sub(p), sq = sub(q);
+      if (sp.some(n => n.fx != null) || sq.some(n => n.fx != null)) continue;
+      sp.forEach(n => { n.x += dx; n.y += dy; if (n.hx != null) { n.hx += dx; n.hy += dy; } });
+      sq.forEach(n => { n.x -= dx; n.y -= dy; if (n.hx != null) { n.hx -= dx; n.hy -= dy; } });
+      swapped++;
+    }
+    return swapped;
+  }
+
+  run(500, 200);
+  for (let pass = 0; pass < 6; pass++) {
+    if (!untangle()) break;
+    sim.force('hx').x(n => n.hx ?? n.x); sim.force('hy').y(n => n.hy ?? n.y);
+    run(120, -1);
+  }
+  run(80, -1);
+  const before = crossings().length;
+
+  // ---------- 마무리: 남은 교차는 말단을 부모 주위 다른 자리로 옮겨 해소 ----------
+  const segHit = (a, b, c, d) => cross(a, b, c, d);
+  const rectOf = (n, x, y) => [x + n.lr[0], y + n.lr[1], x + n.lr[2], y + n.lr[3]];
+  const ov = (A, B) => Math.max(0, Math.min(A[2], B[2]) - Math.max(A[0], B[0])) * Math.max(0, Math.min(A[3], B[3]) - Math.max(A[1], B[1]));
+  const segRect = (a, b, R) => { // 선분이 사각형을 지나는지 (샘플링)
+    for (let t = 0.1; t < 0.95; t += 0.1) { const x = a.x + (b.x - a.x) * t, y = a.y + (b.y - a.y) * t; if (x > R[0] && x < R[2] && y > R[1] && y < R[3]) return 1; }
+    return 0;
+  };
+  function cost(n, x, y) {
+    const p = n.parent, me = { x, y }, R = rectOf(n, x, y);
+    let c = 0;
+    for (const l of links) {
+      if (l.target === n || l.source === n) continue;
+      if (l.source !== p && l.target !== p && segHit(p, me, l.source, l.target)) c += 1000;
+      if (segRect(l.source, l.target, R)) c += 120;
+    }
+    for (const o of nodes) {
+      if (o === n) continue;
+      const Ro = rectOf(o, o.x, o.y);
+      c += ov(R, Ro) * 0.6;
+      if (o !== p && segRect(p, me, Ro)) c += 120;
+    }
+    const [x0, y0, x1, y1] = n.box;
+    if (R[0] < x0 - 30 || R[2] > x1 + 30 || R[1] < y0 - 30 || R[3] > y1 + 30) c += 400;
+    return c;
+  }
+  for (let pass = 0; pass < 4; pass++) {
+    const bad = new Set();
+    crossings().forEach(([A, B]) => { [A.target, B.target].forEach(t => { if (!t.children && t.fx == null) bad.add(t); }); });
+    if (!bad.size) break;
+    for (const n of bad) {
+      const p = n.parent, d0 = Math.hypot(n.x - p.x, n.y - p.y);
+      let best = [cost(n, n.x, n.y), n.x, n.y];
+      const dd = Math.max(90, Math.min(d0, 160));
+      for (const dm of [1, 1.3]) for (let k = 0; k < 36; k++) {
+        const a = k / 36 * Math.PI * 2, x = p.x + Math.cos(a) * dd * dm, y = p.y + Math.sin(a) * dd * dm;
+        const c = cost(n, x, y) + (dm - 1) * 200;
+        if (c < best[0]) best = [c, x, y];
+      }
+      n.x = best[1]; n.y = best[2];
+    }
+  }
+  window.__tolStats = { nodes: nodes.length, before, crossings: crossings().length };
+
+  // ---------- render ----------
+  const svg = d3.select('#tree').attr('width', W).attr('height', H).attr('viewBox', `0 0 ${W} ${H}`);
+  const col = n => GROUPS[n.g].c;
+  const gl = svg.append('g'), gn = svg.append('g');
+
+  function size(n) { return n.sz ??= n.children ? 1 + n.children.reduce((s, c) => s + size(c), 0) : 1; }
+  size(TREE); size(VIRUS);
+  links.forEach(l => {
+    const t = l.target, w = Math.max(2.5, Math.min(24, Math.sqrt(size(t)) * 1.7));
+    gl.append('line').attr('x1', l.source.x).attr('y1', l.source.y).attr('x2', t.x).attr('y2', t.y)
+      .attr('stroke', col(t)).attr('stroke-width', w).attr('stroke-linecap', 'round')
+      .attr('stroke-dasharray', t.ex ? '7 7' : null).attr('opacity', t.ex ? 0.7 : 0.9);
+  });
+
+  nodes.forEach(n => {
+    const g = gn.append('g').attr('transform', `translate(${n.x},${n.y})`);
+    const c = col(n);
+    if (n.big) {
+      g.append('circle').attr('r', n.r + 6).attr('fill', 'none').attr('stroke', c).attr('stroke-opacity', 0.35).attr('stroke-width', 2);
+      g.append('circle').attr('r', n.r).attr('fill', c);
+      const fs = n.big === 3 ? 34 : n.big === 2 ? 22 : 16;
+      g.append('text').attr('text-anchor', 'middle').attr('y', n.ma ? -2 : 4).attr('fill', BG)
+        .attr('font-size', fs).attr('font-weight', 700).text(n.n);
+      g.append('text').attr('text-anchor', 'middle').attr('y', (n.ma ? -2 : 4) + fs * 0.8).attr('class', 'sci')
+        .attr('fill', BG).attr('font-size', n.big === 3 ? 13 : 10.5).attr('opacity', 0.8).text(n.s);
+      if (n.ma) g.append('text').attr('text-anchor', 'middle').attr('y', n.r + 26).attr('class', 'halo')
+        .attr('fill', c).attr('font-size', 14).attr('font-weight', 600).text(n.ma);
+    } else if (n.leaf) {
+      const r = n.hl ? 19 : n.r;
+      g.append('circle').attr('r', r).attr('fill', BG).attr('stroke', c).attr('stroke-width', n.hl ? 4 : 2.5)
+        .attr('stroke-dasharray', n.ex ? '4 3' : null);
+      g.append('circle').attr('r', n.hl ? 9 : 5).attr('fill', c).attr('opacity', n.ex ? 0.4 : 1);
+      if (n.ord) g.append('text').attr('class', 'halo').attr('text-anchor', 'middle').attr('y', -r - 6)
+        .attr('fill', c).attr('font-size', 11.5).attr('font-weight', 600).attr('opacity', 0.9).text(n.ord);
+      g.append('text').attr('class', 'halo').attr('text-anchor', 'middle').attr('y', r + 17)
+        .attr('fill', n.hl ? c : 'var(--ink)').attr('font-size', n.hl ? 17 : 14.5).attr('font-weight', n.hl ? 700 : 500)
+        .text(n.n + (n.ex ? ' †' : ''));
+      g.append('text').attr('class', 'halo sci').attr('text-anchor', 'middle').attr('y', r + 31)
+        .attr('fill', 'var(--dim)').attr('font-size', 10.5).text(n.s);
+      if (n.e) g.append('text').attr('class', 'halo').attr('text-anchor', 'middle').attr('y', r + 45)
+        .attr('fill', c).attr('font-size', 11.5).attr('font-weight', 500).text(n.e);
+    } else {
+      g.append('circle').attr('r', n.r).attr('fill', c).attr('stroke', BG).attr('stroke-width', 3);
+      g.append('text').attr('class', 'halo').attr('text-anchor', 'middle').attr('y', -15)
+        .attr('fill', c).attr('font-size', 15.5).attr('font-weight', 700).text(n.n);
+      g.append('text').attr('class', 'halo sci').attr('text-anchor', 'middle').attr('y', 26)
+        .attr('fill', 'var(--dim)').attr('font-size', 10.5).text(n.s);
+      if (n.ma) g.append('text').attr('class', 'halo').attr('text-anchor', 'middle').attr('y', 41)
+        .attr('fill', c).attr('font-size', 12.5).attr('font-weight', 600).text(n.ma);
+    }
+  });
+
+  // ---------- title ----------
+  const head = svg.append('g');
+  head.append('text').attr('x', W / 2).attr('y', 220).attr('text-anchor', 'middle')
+    .attr('font-size', 170).attr('font-weight', 700).attr('letter-spacing', -4).attr('fill', 'var(--ink)').text('생명의 나무');
+  head.append('text').attr('x', W / 2).attr('y', 300).attr('text-anchor', 'middle')
+    .attr('font-size', 36).attr('font-weight', 500).attr('letter-spacing', 10).attr('fill', 'var(--dim)').text('40억 년, 하나의 뿌리에서 갈라진 생명의 계통');
+  head.append('line').attr('x1', 120).attr('x2', W - 120).attr('y1', 360).attr('y2', 360).attr('stroke', 'var(--dim)').attr('stroke-opacity', 0.25);
+
+  // ---------- legend ----------
+  svg.append('line').attr('x1', 120).attr('x2', W - 120).attr('y1', H - 200).attr('y2', H - 200).attr('stroke', 'var(--dim)').attr('stroke-opacity', 0.25);
+  const lg = svg.append('g').attr('transform', `translate(120, ${H - 128})`);
+  let lx = 0;
+  Object.entries(GROUPS).filter(([k]) => k !== 'root').forEach(([k, v]) => {
+    lg.append('circle').attr('cx', lx + 11).attr('cy', -8).attr('r', 11).attr('fill', v.c);
+    lg.append('text').attr('x', lx + 32).attr('y', 0).attr('font-size', 22).attr('fill', 'var(--dim)').text(v.name);
+    lx += 56 + kw(v.name) * 21;
+  });
+  svg.append('text').attr('x', 120).attr('y', H - 64).attr('font-size', 20).attr('fill', 'var(--dim)')
+    .text('분류 단계  역 → 계 → 문 → 강 → 목 → 과   ·   말단 노드는 모두 \'과(Family)\'이며, 아래 작은 글씨는 대표 생물');
+  const nt = svg.append('g').attr('transform', `translate(${W - 120}, ${H - 128})`).attr('text-anchor', 'end');
+  [['†  멸종 계통 (점선)   ·   가지 길이는 시간에 비례하지 않음', 0], ['굵은 가지일수록 많은 하위 계통 포함   ·   바이러스는 세포 생물 계통과 별개', 64]].forEach(([t, y]) =>
+    nt.append('text').attr('y', y).attr('font-size', 20).attr('fill', 'var(--dim)').text(t));
+
+  const poster = document.getElementById('poster');
+  poster.style.width = W + 'px'; poster.style.height = H + 'px';
+  document.getElementById('loading').remove();
+
+  // ---------- zoom / pan ----------
+  const stage = d3.select('#stage');
+  const zoom = d3.zoom().scaleExtent([0.05, 4]).on('zoom', e => {
+    const t = e.transform; poster.style.transform = `translate(${t.x}px,${t.y}px) scale(${t.k})`;
+    try { localStorage.setItem('tol-zoom-v4', JSON.stringify([t.x, t.y, t.k])); } catch (_) {}
+  });
+  stage.call(zoom);
+  const fitT = () => {
+    const s = Math.min(innerWidth / W, innerHeight / H) * 0.98;
+    return d3.zoomIdentity.translate((innerWidth - W * s) / 2, (innerHeight - H * s) / 2).scale(s);
+  };
+  let saved = null; try { saved = JSON.parse(localStorage.getItem('tol-zoom-v4')); } catch (_) {}
+  stage.call(zoom.transform, saved ? d3.zoomIdentity.translate(saved[0], saved[1]).scale(saved[2]) : fitT());
+  document.getElementById('fit').onclick = () => stage.transition().duration(400).call(zoom.transform, fitT());
+  document.getElementById('zin').onclick = () => stage.transition().duration(250).call(zoom.scaleBy, 1.5);
+  document.getElementById('zout').onclick = () => stage.transition().duration(250).call(zoom.scaleBy, 1 / 1.5);
+
+  // ---------- export ----------
+  document.getElementById('dl').onclick = async e => {
+    const btn = e.currentTarget; btn.textContent = '저장 중…';
+    const t = poster.style.transform; poster.style.transform = 'none';
+    try {
+      const url = await htmlToImage.toPng(poster, { width: W, height: H, pixelRatio: 1.5 });
+      const a = document.createElement('a'); a.href = url; a.download = '생명의 나무.png'; a.click();
+    } finally { poster.style.transform = t; btn.textContent = 'PNG로 저장'; }
+  };
+}
+</script>
+</body>
+</html>
